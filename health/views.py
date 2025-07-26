@@ -1,31 +1,33 @@
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status, viewsets
+from rest_framework.parsers import MultiPartParser, FormParser
+from django.contrib.auth.hashers import make_password
+from django.contrib.auth import authenticate
 from .models import UserProfile, HealthRecord, SkinDisease
 from .serializers import userProfileSerializer, HealthRecordSerializer, SkinDiseaseSerializer
-from rest_framework.views import APIView
-from rest_framework.permissions import IsAuthenticated
-from rest_framework.response import Response
-from rest_framework import status
-import requests
 from .utils import predict_image
-from rest_framework.parsers import MultiPartParser, FormParser
-from rest_framework import viewsets
+import requests
 import os
+import logging
 from dotenv import load_dotenv
 
 load_dotenv()
+logger = logging.getLogger(__name__)
 
 class UserRegister(APIView):
     def post(self, request):
-        serializer = userProfileSerializer(data=request.data)
-        if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data, status=status.HTTP_201_CREATED)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-
-class UserProfileViewSet(viewsets.ModelViewSet):
-    queryset = UserProfile.objects.all()
-    serializer_class = userProfileSerializer
-
+        try:
+            data = request.data.copy()
+            data['password'] = make_password(data.get('password'))
+            serializer = userProfileSerializer(data=data)
+            if serializer.is_valid():
+                serializer.save()
+                return Response(serializer.data, status=status.HTTP_201_CREATED)
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            logger.exception("Registration failed.")
+            return Response({"error": "Server error during registration."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 class UserLogin(APIView):
     def post(self, request):
@@ -34,7 +36,7 @@ class UserLogin(APIView):
 
         try:
             user = UserProfile.objects.get(username=username)
-            if user.password == password:
+            if user.check_password(password):
                 request.session['user_id'] = user.id
                 serializer = userProfileSerializer(user)
                 return Response({'user': serializer.data}, status=status.HTTP_200_OK)
@@ -43,13 +45,11 @@ class UserLogin(APIView):
         except UserProfile.DoesNotExist:
             return Response({"error": "Invalid username"}, status=status.HTTP_401_UNAUTHORIZED)
 
-
 class UserInfo(APIView):
     def get(self, request):
         user_id = request.session.get('user_id')
-        if user_id is None:
+        if not user_id:
             return Response({'error': 'User not logged in'}, status=status.HTTP_401_UNAUTHORIZED)
-
         try:
             user = UserProfile.objects.get(id=user_id)
             serializer = userProfileSerializer(user)
@@ -57,6 +57,9 @@ class UserInfo(APIView):
         except UserProfile.DoesNotExist:
             return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
 
+class UserProfileViewSet(viewsets.ModelViewSet):
+    queryset = UserProfile.objects.all()
+    serializer_class = userProfileSerializer
 
 class HealthRecordView(APIView):
     def post(self, request):
@@ -74,31 +77,28 @@ class HealthRecordView(APIView):
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
         user_message = serializer.validated_data['message']
-        city_name = user.address or "ongole"
+        city_name = user.address or "Ongole"
 
-        # Load from environment
         groq_api_key = os.getenv("GROQ_API_KEY")
         geoapify_api_key = os.getenv("GEOAPIFY_API_KEY")
 
-        groq_payload = {
-            "model": "llama3-8b-8192",
-            "messages": [
-                {"role": "system", "content": "You are a helpful AI health assistant."},
-                {"role": "user", "content": f"""
-                    You are a professional AI health assistant.
-                    Analyze the user's symptom(s) and provide:
-
-                    1. A summary of what the symptom may indicate.
-                    2. Safe over-the-counter medication suggestions (if applicable).
-                    3. Home remedies (natural and safe).
-                    4. Advise whether to seek medical attention.
-
-                    User Message: \"{user_message}\" 
-                """}
-            ]
-        }
-
+        # GROQ AI Request
         try:
+            groq_payload = {
+                "model": "llama3-8b-8192",
+                "messages": [
+                    {"role": "system", "content": "You are a helpful AI health assistant."},
+                    {"role": "user", "content": f"""
+                        Analyze the user's symptoms and provide:
+                        1. Summary
+                        2. OTC Medications
+                        3. Natural Remedies
+                        4. Medical Advice
+
+                        Symptoms: \"{user_message}\" 
+                    """}
+                ]
+            }
             groq_res = requests.post(
                 "https://api.groq.com/openai/v1/chat/completions",
                 json=groq_payload,
@@ -110,8 +110,9 @@ class HealthRecordView(APIView):
             groq_res.raise_for_status()
             bot_reply = groq_res.json()['choices'][0]['message']['content'].strip()
         except requests.RequestException as e:
-            return Response({"error": f"Groq API error: {str(e)}"}, status=500)
+            return Response({"error": f"GROQ API failed: {str(e)}"}, status=500)
 
+        # Geoapify: Get nearby hospitals
         hospitals = []
         try:
             geo_res = requests.get(
@@ -119,8 +120,7 @@ class HealthRecordView(APIView):
                 params={"text": city_name, "apiKey": geoapify_api_key}
             )
             geo_res.raise_for_status()
-            geo_data = geo_res.json()
-            features = geo_data.get("features", [])
+            features = geo_res.json().get("features", [])
 
             if features:
                 coords = features[0]["geometry"]["coordinates"]
@@ -140,17 +140,17 @@ class HealthRecordView(APIView):
 
                 hospitals = [
                     {
-                        "name": f["properties"].get("name", "Unnamed"),
-                        "address": f["properties"].get("formatted", "Address not available"),
-                        "category": f["properties"].get("sub_category", "N/A"),
-                        "lat": f["properties"].get("lat"),
-                        "lon": f["properties"].get("lon"),
-                        "map_link": f"https://www.google.com/maps/search/?api=1&query={f['properties'].get('lat')},{f['properties'].get('lon')}"
+                        "name": p["properties"].get("name", "Unnamed"),
+                        "address": p["properties"].get("formatted", "No address"),
+                        "category": p["properties"].get("sub_category", "N/A"),
+                        "lat": p["properties"].get("lat"),
+                        "lon": p["properties"].get("lon"),
+                        "map_link": f"https://www.google.com/maps/search/?api=1&query={p['properties'].get('lat')},{p['properties'].get('lon')}"
                     }
-                    for f in place_data
+                    for p in place_data
                 ]
             else:
-                hospitals = [{"error": "Could not find location from the city name."}]
+                hospitals = [{"error": "City not found"}]
         except requests.RequestException as e:
             hospitals = [{"error": f"Geoapify error: {str(e)}"}]
 
@@ -162,9 +162,8 @@ class HealthRecordView(APIView):
 
         return Response({
             "record": HealthRecordSerializer(record).data,
-            "suggested_hospitals": hospitals or "No hospitals found"
+            "suggested_hospitals": hospitals
         }, status=status.HTTP_201_CREATED)
-
 
 class SkinDiseaseView(APIView):
     parser_classes = (MultiPartParser, FormParser)
@@ -174,17 +173,19 @@ class SkinDiseaseView(APIView):
         if serializer.is_valid():
             instance = serializer.save()
 
-            # Run prediction
-            image_path = instance.image.path
-            prediction = predict_image(image_path)
-
-            instance.message = f"Predicted class: {prediction}"
-            instance.save()
+            try:
+                image_path = instance.image.path
+                prediction = predict_image(image_path)
+                instance.message = f"Predicted class: {prediction}"
+                instance.save()
+            except Exception as e:
+                logger.exception("Prediction error")
+                return Response({"error": "Prediction failed"}, status=500)
 
             return Response({
                 "prediction": prediction,
                 "image_url": instance.image.url,
                 "message": instance.message
-            })
+            }, status=200)
 
         return Response(serializer.errors, status=400)
