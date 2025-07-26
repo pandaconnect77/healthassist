@@ -96,6 +96,7 @@ DATABASES = {
 # CORS settings
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:5173",
+    "https://healthassist-38x5.onrender.com",
 ]
 CORS_ALLOW_CREDENTIALS = True
 
