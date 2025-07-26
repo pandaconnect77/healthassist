@@ -124,7 +124,7 @@ LANGUAGE_CODE = 'en-us'
 TIME_ZONE = 'UTC'
 USE_I18N = True
 USE_TZ = True
-
+CORS_ALLOW_ALL_ORIGINS = True
 # Static files
 STATIC_URL = 'static/'
 
