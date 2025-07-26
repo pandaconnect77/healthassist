@@ -11,6 +11,8 @@ import requests
 import os
 import logging
 from dotenv import load_dotenv
+from django.http import JsonResponse
+
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -29,6 +31,10 @@ class UserRegister(APIView):
             logger.exception("Registration failed.")
             return Response({"error": "Server error during registration."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+
+def server_status(request):
+    return JsonResponse({"status": "Server started", "host": "https://healthassist-38x5.onrender.com"})
+    
 class UserLogin(APIView):
     def post(self, request):
         username = request.data.get('username')
