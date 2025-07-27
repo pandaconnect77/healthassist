@@ -45,7 +45,7 @@ MIDDLEWARE = [
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
 
-ROOT_URLCONF = 'healthAssit.urls'
+
 
 TEMPLATES = [
     {
@@ -63,7 +63,10 @@ TEMPLATES = [
     },
 ]
 
-WSGI_APPLICATION = 'healthAssit.wsgi.application'
+ROOT_URLCONF = 'healthassist.urls'
+WSGI_APPLICATION = 'healthassist.wsgi.application'
+
+
 
 # Database (PostgreSQL)
 DATABASES = {
